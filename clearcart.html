@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ClearCart - Make every checkout transparent</title>
+<style>
+:root{--navy:#14213D;--teal:#0F766E;--bg:#FAFAF7;--panel:#fff;--line:#E2E8E6;--mut:#64748B;--red:#B91C1C;--amb:#B45309;--grn:#15803D}
+*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--navy)}
+header{background:var(--navy);color:#fff;padding:.8rem 1.2rem;display:flex;gap:1rem;align-items:center;flex-wrap:wrap}
+header b{font-size:1.2rem}header small{color:#9FB3C8}nav{display:flex;gap:.3rem;margin-left:auto;flex-wrap:wrap}
+nav button{background:none;border:0;color:#cbd5e1;padding:.4rem .7rem;border-radius:6px;cursor:pointer;font:inherit}nav button.on{background:var(--teal);color:#fff}
+main{max-width:980px;margin:0 auto;padding:1.4rem 1rem 3rem}h1{font-size:2.3rem;margin:.2rem 0}h2{margin-top:1.6rem}
+.tag{color:var(--teal);font-size:1.1rem}.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1rem;margin:.7rem 0}
+.note{border-left:3px solid var(--teal);background:#F1F5F4;padding:.5rem .9rem;border-radius:4px;color:#334155;margin:.8rem 0}
+button.p,button.s{font:inherit;padding:.55rem 1rem;border-radius:8px;cursor:pointer;border:1px solid var(--teal)}button.p{background:var(--teal);color:#fff}button.s{background:#fff;color:var(--teal)}button:disabled{opacity:.5;cursor:not-allowed}
+select,textarea,input{font:inherit;width:100%;padding:.5rem;border:1px solid var(--line);border-radius:8px}textarea{min-height:170px;font-family:ui-monospace,Consolas,monospace;font-size:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:.7rem}.m{font-size:1.8rem;font-weight:700}.mut{color:var(--mut);font-size:13px}
+.pill{display:inline-block;padding:.05rem .5rem;border-radius:99px;font-size:12px;font-weight:600;color:#fff}
+.potential_issue{background:var(--red)}.insufficient_evidence{background:var(--amb)}.not_checked{background:#64748B}.no_signal_detected{background:var(--grn)}.audit_error{background:#7f1d1d}
+.bar{height:6px;background:var(--line);border-radius:4px;overflow:hidden}.bar i{display:block;height:100%;background:var(--teal)}
+details{margin:.3rem 0}pre{background:#F1F5F4;padding:.6rem;border-radius:6px;overflow:auto;font-size:12px;white-space:pre-wrap}
+.err{color:var(--red)}.hide{display:none}
+@media print{header,.noprint{display:none}body{background:#fff}.card{break-inside:avoid}}
+</style></head><body>
+<header><b>ClearCart</b><small>Make every checkout transparent.</small>
+<nav class="noprint" id="nav"></nav></header>
+<main id="app"></main>
+<script>
+// ===================== DETECTORS (no UI code) =====================
+const num=v=>{if(v==null||typeof v==='boolean')return null;if(typeof v==='number')return isFinite(v)?v:null;const n=parseFloat(String(v).replace(/,/g,'').replace(/[^\d.\-]/g,''));return isNaN(n)?null:n};
+const f2=x=>x.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+const norm=s=>String(s==null?'':s).trim().toLowerCase().replace(/\s+/g,' ');
+const LABEL={drip_pricing:'Possible drip pricing',basket_sneaking:'Possible basket sneaking',false_urgency:'Possible false urgency',confirm_shaming:'Possible confirm shaming',preselected_addons:'Possible interface interference / preselected add-ons'};
+const FIX={drip_pricing:'Show every mandatory charge (tax, delivery, handling, platform fees) before the final step and keep the total equal to the itemised sum.',basket_sneaking:'Only add items after an explicit shopper action; show bundles as clear opt-ins.',false_urgency:'Use timers and stock messages only when they reflect real deadlines or inventory, and do not reset them on reload.',confirm_shaming:'Use neutral, equally weighted labels such as "Add" and "No thanks".',preselected_addons:'Leave optional extras unchecked by default.'};
+function F(p,title,status,sev,conf,basis,reason,evidence,check,url,lim){return{pattern:p,title,status,severity:sev,confidence:conf,confidence_basis:basis,reasoning:reason,evidence:evidence||[],recommended_check:check,suggested_fix:status==='potential_issue'?FIX[p]:'',source_url:url,observed_at:new Date().toISOString(),limitations:lim||[]}}
+function notChecked(p,what,url){return[F(p,LABEL[p]+': not checked','not_checked','info',0,'No evidence was captured for this check.','No '+what+' evidence was available, so this check did not run.',[],'Capture '+what+' evidence and re-run.',url,['Absence of evidence is not evidence of absence.'])]}
+
+function dripPricing(ev,url){const p=ev.pricing;if(!p)return notChecked('drip_pricing','pricing',url);
+ const prod=num(p.product_price),fin=num(p.final_total);
+ if(prod==null||fin==null)return[F('drip_pricing','Drip pricing: insufficient evidence','insufficient_evidence','info',0,'Product price or final total was not captured.','Both are needed to compare.',[{kind:'observed',product_price:prod,final_total:fin}],'Record the advertised price and the final total shown before payment.',url)];
+ const comps=[['product price',prod]];
+ [['taxes','taxes',1],['delivery_fees','delivery/handling',1],['addons','selected add-ons',1],['discounts','discounts',-1]].forEach(([k,l,s])=>{const v=num(p[k])||0;if(v)comps.push([l,s*Math.abs(v)])});
+ (p.other_disclosed_charges||[]).forEach(c=>{const v=num(c.amount);if(v)comps.push([c.label||'other disclosed charge',v])});
+ const exp=Math.round(comps.reduce((a,c)=>a+c[1],0)*100)/100,diff=Math.round((fin-exp)*100)/100;
+ const arith=comps.map((c,i)=>(i?(c[1]<0?'- ':'+ '):'')+f2(Math.abs(c[1]))+' ('+c[0]+')').join(' ')+' = '+f2(exp);
+ const ev1={kind:'inference',arithmetic:arith,expected_total:exp,observed_total:fin,difference:diff,assumption:'Expected total = product + disclosed taxes/fees/add-ons - discounts.'};
+ const it=!!p.itemised,basis=it?'Higher confidence: an itemised breakdown was available.':'Lower confidence: no full itemised breakdown, so a charge may have been missed.';
+ if(diff>1){const pct=exp?diff/exp*100:100;return[F('drip_pricing','Unexplained '+f2(diff)+' added to the final total','potential_issue',pct>=10?'high':pct>=3?'medium':'low',it?.8:.55,basis,'The final total ('+f2(fin)+') is '+f2(diff)+' ('+pct.toFixed(1)+'%) higher than the disclosed components ('+f2(exp)+').',[ev1],'Look for a handling, platform or packaging fee that is not itemised or appears only at the last step.',url,['A charge may be disclosed somewhere the capture did not reach.','A higher total is not itself a violation; the question is whether it was disclosed.'])];}
+ return[F('drip_pricing','No unexplained price difference detected','no_signal_detected','info',it?.8:.5,basis,Math.abs(diff)<=1?'Final total matches the disclosed components.':'Final total is lower than the disclosed components; not a drip-pricing signal.',[ev1],'No action required for this check.',url,['Only the captured price journey was compared.'])]}
+
+function expectedCart(actions,after){const e={},seen=new Set();
+ [...actions].sort((a,b)=>(a.seq||0)-(b.seq||0)).forEach(a=>{if(after!=null&&(a.seq||0)>after)return;const id=a.event_id||[a.seq,a.type,a.item].join('|');if(seen.has(id))return;seen.add(id);
+  const k=norm(a.item),q=parseInt(a.qty||1,10);
+  if(['add_to_cart','add','increase_quantity'].includes(a.type))e[k]=(e[k]||0)+q;else if(['remove_from_cart','remove','decrease_quantity'].includes(a.type))e[k]=Math.max(0,(e[k]||0)-q);else if(a.type==='set_quantity')e[k]=q});return e}
+function basketSneaking(ev,url){const snaps=ev.cart_snapshots||[],acts=ev.actions||[];if(!snaps.length)return notChecked('basket_sneaking','cart',url);
+ if(!acts.length||ev.actions_complete===false)return[F('basket_sneaking','Basket sneaking: insufficient evidence','insufficient_evidence','info',0,'The action history is missing or marked incomplete.','Without a complete record of what was added, an unexpected item cannot be called unexplained.',[{kind:'observed',cart_snapshots:snaps.length,actions_recorded:acts.length}],'Repeat the journey while recording every add/remove action.',url)];
+ const out=[],flagged=new Set();
+ snaps.forEach(s=>{const e=expectedCart(acts,s.after_seq);(s.items||[]).forEach(it=>{const k=norm(it.name),q=parseInt(it.qty||1,10),x=q-(e[k]||0);
+  if(x>0&&!flagged.has(k)){flagged.add(k);out.push(F('basket_sneaking','Cart item without a recorded add action: '+it.name,'potential_issue',(num(it.price)||0)>0?'high':'medium',.7,'Based on a complete action history (duplicates ignored); capped because page state can change outside recorded actions.','At step "'+s.step+'" the cart held '+q+' x "'+it.name+'" but recorded actions explain only '+(e[k]||0)+'.',[{kind:'observed',step:s.step,cart_item:it,expected_quantity:e[k]||0},{kind:'observed',recorded_actions:acts}],'Replay the journey: add only the intended product and see whether this item appears by itself.',s.url||url,['Items can be left over from an earlier session or a logged-in profile.']))}})});
+ return out.length?out:[F('basket_sneaking','No unexplained cart additions detected','no_signal_detected','info',.7,'Cart contents matched the recorded actions at every captured step.','Compared '+snaps.length+' snapshot(s) with '+acts.length+' action(s).',[],'No action required for this check.',url,['Only observed steps were compared.'])]}
+
+const TIMER=/\b(\d{1,2}):(\d{2})(?::(\d{2}))?\b/,SCARCE=/\b(only\s+\d+\s+(left|remaining|in stock)|\d+\s+left|selling fast|almost gone|low stock|last (one|chance|few)|\d+\s+people (are )?(viewing|watching))\b/i,PRESS=/\b(hurry|ends? in|ends soon|limited time|expires?|offer (valid|ends)|deal ends|don'?t miss|act now)\b/i;
+function timerSecs(t){const m=TIMER.exec(t||'');if(!m)return null;return m[3]?(+m[1])*3600+(+m[2])*60+(+m[3]):(+m[1])*60+(+m[2])}
+function falseUrgency(ev,url){if(!('urgency' in ev))return notChecked('false_urgency','urgency',url);
+ const sig=[];(ev.urgency||[]).forEach(s=>{const t=s.text||'';let secs=num(s.timer_seconds);if(secs==null)secs=timerSecs(t);const tm=s.kind==='timer'||secs!=null,sc=s.kind==='scarcity'||SCARCE.test(t);if(!(tm||sc||PRESS.test(t)))return;sig.push({...s,_sid:s.signal_id||norm(t).replace(/\d+/g,'#'),_secs:secs,_tm:tm,_sc:sc})});
+ if(!sig.length)return[F('false_urgency','No urgency messaging detected','no_signal_detected','info',.6,'No timer, scarcity or time-pressure wording was found in the captured text.','The captured text contained no urgency wording.',[],'No action required for this check.',url,['Urgency elements may sit on pages that were not captured.'])];
+ const g={};sig.forEach(s=>(g[s._sid]=g[s._sid]||[]).push(s));const out=[],single=[];
+ Object.values(g).forEach(obs=>{obs.sort((a,b)=>String(a.observed_at).localeCompare(String(b.observed_at)));if(obs.length<2){single.push(obs[0]);return}
+  const a=obs[0],b=obs[obs.length-1],ta=Date.parse(a.observed_at),tb=Date.parse(b.observed_at),why=[];
+  if(a._tm&&a._secs!=null&&b._secs!=null&&!isNaN(ta)&&!isNaN(tb)){const el=(tb-ta)/1000,pred=Math.max(0,a._secs-el);if(b._secs>pred+30)why.push('Timer showed '+a._secs+'s, then '+b._secs+'s after '+Math.round(el)+'s; a running countdown would show about '+Math.round(pred)+'s.')}
+  if(a._sc&&a.stock_count!=null&&b.stock_count!=null&&b.stock_count>a.stock_count)why.push('Stock message rose from '+a.stock_count+' to '+b.stock_count+' with no recorded restock.');
+  const evd=obs.map(o=>({kind:'observed',observation:Object.fromEntries(Object.entries(o).filter(([k])=>k[0]!=='_'))}));
+  out.push(why.length?F('false_urgency','Urgency claim changed between observations: "'+a.text+'"','potential_issue','medium',.6,'Timestamped observations of the same element disagree; reloads or sessions may legitimately differ, so confidence is moderate.',why.join(' '),evd,'Reload in a fresh private window a few minutes apart and note whether the timer/stock count resets.',a.url||url,['A changed number does not prove the claim is false.','Per-session timers can be legitimate.']):F('false_urgency','Urgency claim stayed consistent: "'+a.text+'"','no_signal_detected','info',.5,'Repeat observations were consistent, but only a few were taken.',obs.length+' observations showed no reset or unexplained stock increase.',evd,'Optionally re-check at another time.',url))});
+ if(single.length)out.push(F('false_urgency','Urgency messaging found ('+single.length+'): needs repeat observation','insufficient_evidence','low',.3,'Wording was detected, but one observation cannot show whether the claim is true.','Urgency wording is present. Wording alone is not evidence that a claim is false.',single.map(s=>({kind:'observed',text:s.text,url:s.url})),'Capture the same element again after a reload and compare.',url,['Never conclude a scarcity claim is fake from its wording alone.']));
+ return out}
+
+const SHAME=[[/\bno,?\s+i\s+(don'?t|do not|won'?t|will not)\s+(want|like|need|care|wish)\b/i,'refusal phrased as a personal rejection'],[/\bi\s+(prefer|like|love|enjoy)\s+(to\s+)?(pay|paying|overpay|full price|miss|missing|lose|losing|waste|wasting)\b/i,'decline wording presents a bad outcome as the user\'s preference'],[/\bi('?ll| will)\s+(pay more|miss out|skip (the )?savings|stay (unprotected|unsafe))\b/i,'decline wording presents a bad outcome as the user\'s preference'],[/\b(no,?\s+)?(i\s+)?(hate|dislike)\s+(saving|discounts?|deals?|free)\b/i,'decline wording ascribes a negative attitude to the user'],[/\bno,?\s+i('?d| would)\s+rather\b/i,'decline wording contrasts the user with a better choice'],[/\b(don'?t|do not)\s+care\s+about\b/i,'decline wording implies the user is careless'],[/\b(not interested in|don'?t want to)\s+(saving|save|protect|protection|being (safe|smart))\b/i,'decline wording implies the user rejects a benefit'],[/\b(miss out|boring|careless|foolish|dumb|stupid|cheapskate)\b/i,'guilt or insult vocabulary']];
+const NEUTRAL=['no','no thanks','no, thanks','no thank you','not now','skip','decline','maybe later','continue without','continue without it','close','cancel'];
+function confirmShaming(ev,url){if(!Array.isArray(ev.offers))return notChecked('confirm_shaming','optional-offer',url);
+ const out=[];let checked=0;
+ ev.offers.forEach(o=>{const d=(o.decline_label||'').trim();if(!d){out.push(F('confirm_shaming','Confirm shaming: insufficient evidence','insufficient_evidence','info',0,'The decline label was not captured.','Offer "'+(o.offer_text||'').slice(0,80)+'" has no decline label to evaluate.',[{kind:'observed',offer:o}],'Capture the exact decline label.',o.url||url));return}
+  checked++;if(NEUTRAL.includes(norm(d).replace(/\.$/,'')))return;
+  const hits=SHAME.map(([r,w])=>{const m=r.exec(d);return m?[m[0],w]:null}).filter(Boolean);
+  if(hits.length)out.push(F('confirm_shaming','Decline label may pressure the user: "'+d+'"','potential_issue',hits.length>1?'medium':'low',hits.length>1?.6:.45,'Based on '+hits.length+' matched wording heuristic(s). Text heuristics are subjective, so confidence is capped.','Triggered by: '+hits.map(h=>'"'+h[0]+'" ('+h[1]+')').join('; ')+'.',[{kind:'observed',offer_text:o.offer_text,accept_label:o.accept_label,decline_label:d},{kind:'inference',matched:hits.map(h=>h[0])}],'Read the offer in context: are accept and decline equally prominent and neutrally worded?',o.url||url,['Wording judgements are subjective and need human review.','Brand voice or humour can trigger these heuristics.']))});
+ if(!out.length)out.push(F('confirm_shaming','No pressuring decline wording detected','no_signal_detected','info',.5,'Decline labels matched no heuristic; the heuristics cannot catch every phrasing.',checked?'Checked '+checked+' offer(s).':'No optional offers were captured.',[],'No action required for this check.',url));
+ return out}
+
+function preselected(ev,url){if(!Array.isArray(ev.options))return notChecked('preselected_addons','checkbox/toggle',url);
+ const out=[];ev.options.forEach(o=>{if(!o.optional)return;const l=o.label||'Unnamed option',pr=num(o.price);
+  if(o.interacted_before_observed||o.default_checked==null)out.push(F('preselected_addons','Add-on default state unknown: '+l,'insufficient_evidence','info',0,'The state before any interaction could not be established.','The option may have been changed before it was first observed.',[{kind:'observed',option:o}],'Open the page fresh (private window) and note whether the box starts ticked.',o.url||url));
+  else if(o.default_checked===true)out.push(F('preselected_addons','Optional add-on selected by default: '+l,'potential_issue',pr>0?'high':'medium',.85,'The original state was recorded before interaction and the option is marked optional.','"'+l+'" is optional'+(pr?' and costs '+f2(pr):'')+' but was already selected when first seen.',[{kind:'observed',option:o}],'Confirm in a fresh session that the box is ticked before the shopper does anything.',o.url||url,['Whether the option is truly optional was taken from the capture.']))});
+ return out.length?out:[F('preselected_addons','No preselected optional add-ons detected','no_signal_detected','info',.7,'Every optional extra observed started unselected.','Checked '+ev.options.length+' option(s).',[],'No action required for this check.',url,['Only observed options were checked.'])]}
+
+const DET=[['DRIP',dripPricing],['BASKET',basketSneaking],['URGENCY',falseUrgency],['SHAME',confirmShaming],['ADDON',preselected]];
+function runAll(ev,url){const o=[];DET.forEach(([c,fn])=>fn(ev||{},url).forEach((f,i)=>{f.finding_id='CC-'+c+'-'+String(i+1).padStart(2,'0');o.push(f)}));return o}
+
+// ===================== SAMPLE DATA (fictional) =====================
+const U1='https://sample.lotusloom.example/',U2='https://sample.kalpakitchen.example/',U3='https://sample.nilgiritea.example/';
+const SAMPLES={
+transparent:{name:'Lotus & Loom Linens (fictional)',url:U1+'checkout',summary:'A transparent checkout: every charge is itemised, nothing is preselected.',expected:{drip_pricing:'no_signal_detected',basket_sneaking:'no_signal_detected',false_urgency:'no_signal_detected',confirm_shaming:'no_signal_detected',preselected_addons:'no_signal_detected'},
+ evidence:{pages:[{url:U1+'p/cotton-sheet',title:'Cotton bed sheet',status:'inspected'},{url:U1+'cart',title:'Cart',status:'inspected'},{url:U1+'checkout',title:'Checkout (stopped before payment)',status:'inspected'}],
+ pricing:{product_price:1299,taxes:65,discounts:100,delivery_fees:49,addons:0,final_total:1313,itemised:true},actions:[{seq:1,event_id:'a1',type:'add_to_cart',item:'Cotton bed sheet',qty:1}],actions_complete:true,
+ cart_snapshots:[{step:'cart',url:U1+'cart',after_seq:1,items:[{name:'Cotton bed sheet',qty:1,price:1299}]}],urgency:[],offers:[{offer_text:'Add gift wrap for 49',accept_label:'Add gift wrap',decline_label:'No thanks',url:U1+'checkout'}],options:[{label:'Gift wrap',optional:true,default_checked:false,price:49,url:U1+'checkout'}]}},
+price_gap:{name:'Kalpa Kitchenware (fictional)',url:U2+'checkout',summary:'The final total is higher than the itemised charges, and an extended warranty is ticked by default.',expected:{drip_pricing:'potential_issue',basket_sneaking:'no_signal_detected',false_urgency:'no_signal_detected',confirm_shaming:'no_signal_detected',preselected_addons:'potential_issue'},
+ evidence:{pages:[{url:U2+'p/pressure-cooker',title:'Pressure cooker',status:'inspected'},{url:U2+'checkout',title:'Checkout (stopped before payment)',status:'inspected'},{url:U2+'pay',title:'Payment page',status:'not_reached',note:'Audit stops before payment by design.'}],
+ pricing:{product_price:2499,taxes:125,discounts:0,delivery_fees:0,addons:199,final_total:3123,itemised:true},actions:[{seq:1,event_id:'k1',type:'add_to_cart',item:'Pressure cooker 5L',qty:1}],actions_complete:true,
+ cart_snapshots:[{step:'checkout',url:U2+'checkout',after_seq:1,items:[{name:'Pressure cooker 5L',qty:1,price:2499}]}],urgency:[],offers:[],options:[{label:'Extended warranty',optional:true,default_checked:true,price:199,url:U2+'checkout'},{label:'I accept the terms of sale',optional:false,default_checked:true,url:U2+'checkout'}]}},
+cart_urgency:{name:'Nilgiri Tea Co. (fictional)',url:U3+'cart',summary:'An item appears in the cart without an add action, a countdown restarts, and the decline button is worded to guilt the shopper.',expected:{drip_pricing:'no_signal_detected',basket_sneaking:'potential_issue',false_urgency:'potential_issue',confirm_shaming:'potential_issue',preselected_addons:'not_checked'},
+ evidence:{pages:[{url:U3+'p/assam-tea',title:'Assam tea 250g',status:'inspected'},{url:U3+'cart',title:'Cart',status:'inspected'}],
+ pricing:{product_price:899,taxes:57,discounts:0,delivery_fees:0,other_disclosed_charges:[{label:'Tea sampler box',amount:249}],final_total:1205,itemised:true},
+ actions:[{seq:1,event_id:'n1',type:'add_to_cart',item:'Assam tea 250g',qty:1},{seq:1,event_id:'n1',type:'add_to_cart',item:'Assam tea 250g',qty:1}],actions_complete:true,
+ cart_snapshots:[{step:'cart',url:U3+'cart',after_seq:1,items:[{name:'Assam tea 250g',qty:1,price:899},{name:'Tea sampler box',qty:1,price:249}]}],
+ urgency:[{signal_id:'cart-timer',kind:'timer',text:'Offer ends in 09:50',timer_seconds:590,observed_at:'2026-01-15T10:00:00+00:00',url:U3+'cart'},{signal_id:'cart-timer',kind:'timer',text:'Offer ends in 09:58',timer_seconds:598,observed_at:'2026-01-15T10:03:00+00:00',url:U3+'cart'},{signal_id:'stock',kind:'scarcity',text:'Only 3 left!',stock_count:3,observed_at:'2026-01-15T10:00:00+00:00',url:U3+'p/assam-tea'}],
+ offers:[{offer_text:'Save 10% on your next order with our newsletter',accept_label:'Yes, sign me up',decline_label:"No, I don't want to save money",url:U3+'cart'}]}}};
+
+const DISCLAIMER='ClearCart is a prototype decision-support tool. Its output is not legal advice and not a legal or regulatory compliance certification. "No signal detected" does not mean a checkout is free of dark patterns.';
+let uid=0;function makeAudit(ev,url,mode,name,notes,sample){const f=runAll(ev,url),lim=[];(ev.pages||[]).forEach(p=>{if(p.status==='blocked'||p.status==='not_reached')lim.push('Not inspected: '+p.url+' ('+p.status+(p.note?': '+p.note:'')+').')});
+ const degraded=f.some(x=>x.status==='not_checked'||x.status==='insufficient_evidence');
+ return{audit_id:Date.now().toString(36)+(uid++),schema_version:'1.0',store_name:name,store_url:url,mode,status:degraded?'completed_with_limitations':'completed',started_at:new Date().toISOString(),completed_at:new Date().toISOString(),notes,pages_inspected:ev.pages||[],evidence:ev,findings:f,errors:[],limitations:lim,provider:{name:mode==='sample'?'built-in sample':'manual evidence'}}}
+//==UI==
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const STX={potential_issue:'Potential issue',no_signal_detected:'No signal detected',insufficient_evidence:'Insufficient evidence',not_checked:'Not checked',audit_error:'Audit error'};
+const SO={high:0,medium:1,low:2,info:3},STO={potential_issue:0,insufficient_evidence:1,not_checked:2,audit_error:3,no_signal_detected:4};
+const S={page:'Overview',history:[],sel:null,msg:''};
+const PAGES=['Overview','New audit','Results','Methodology'];
+function go(p){S.page=p;render()}
+function nav(){document.getElementById('nav').innerHTML=PAGES.map(p=>`<button class="${p===S.page?'on':''}" onclick="go('${p}')">${p}</button>`).join('')}
+function card(f){return `<div class="card"><b>${esc(f.title)}</b><br><span class="pill ${f.status}">${STX[f.status]}</span> <span class="mut">${esc(LABEL[f.pattern])} · priority: ${f.severity} · ${f.finding_id}</span>
+<p>${esc(f.reasoning)}</p>${['potential_issue','no_signal_detected','insufficient_evidence'].includes(f.status)?`<div class="mut">Confidence: ${Math.round(f.confidence*100)}%</div><div class="bar"><i style="width:${f.confidence*100}%"></i></div><div class="mut">${esc(f.confidence_basis)}</div>`:''}
+<details><summary>Evidence (${f.evidence.length})</summary>${f.evidence.map(e=>`<div class="mut">Type: ${esc(e.kind||'observed')}</div><pre>${esc(JSON.stringify(Object.fromEntries(Object.entries(e).filter(([k])=>k!=='kind')),null,2))}</pre>`).join('')||'<span class="mut">No evidence items.</span>'}</details>
+<p><b>Next check:</b> ${esc(f.recommended_check)}</p>${f.suggested_fix?`<p><b>Suggested fix:</b> ${esc(f.suggested_fix)}</p>`:''}${f.limitations.length?`<div class="mut">Limitations: ${esc(f.limitations.join(' '))}</div>`:''}<div class="mut">Source: ${esc(f.source_url)} · observed ${esc(f.observed_at)}</div></div>`}
+function pOverview(){return `<h1>ClearCart</h1><div class="tag">Make every checkout transparent.</div>
+<p>ClearCart records what a shopping journey actually shows and runs transparent rules that point out checkout patterns worth a second look. Every warning comes with its evidence, a confidence explanation, limitations and a next check. It runs entirely in your browser: nothing you enter is uploaded.</p>
+<button class="p" onclick="go('New audit')">Start an audit</button> <button class="s" onclick="go('New audit')">Explore sample audit</button>
+<h2>How it works</h2><div class="grid"><div class="card"><b>1. Choose</b><br><span class="mut">Pick a fictional sample or paste your own evidence.</span></div><div class="card"><b>2. Detect</b><br><span class="mut">Five rule-based detectors compare the evidence.</span></div><div class="card"><b>3. Review</b><br><span class="mut">Read findings with evidence and limitations.</span></div><div class="card"><b>4. Export</b><br><span class="mut">Download JSON or save the report as PDF.</span></div></div>
+<div class="note"><b>Prototype.</b> ${DISCLAIMER}</div>`}
+function pNew(){return `<h2 style="margin-top:0">New audit</h2>
+<div class="card"><b>Sample audit</b> <span class="mut">(fictional data, no setup)</span><br><br><select id="sid">${Object.entries(SAMPLES).map(([k,v])=>`<option value="${k}">${esc(v.name)}</option>`).join('')}</select>
+<p class="mut" id="ssum">${esc(SAMPLES.transparent.summary)}</p><button class="p" onclick="runSample()">Run sample audit</button></div>
+<div class="card"><b>Audit your own evidence</b><p class="mut">Paste evidence JSON you collected yourself (same format as the samples: pricing, actions, cart_snapshots, urgency, offers, options). Use the "Copy sample evidence" button for a template.</p>
+<input id="url" placeholder="https://your-store.example.in (the store you audited)"><br><br><input id="nm" placeholder="Store name (optional)"><br><br><textarea id="ev" placeholder='{"pricing":{"product_price":1000,"final_total":1200,"itemised":true}}'></textarea>
+<label><input type="checkbox" id="auth" style="width:auto"> I am authorised to audit this store and the evidence is accurate.</label><br><br>
+<button class="p" onclick="runCustom()">Run audit on my evidence</button> <button class="s" onclick="copyTpl()">Copy sample evidence</button><div class="err" id="cerr"></div></div>
+<div class="card"><b>Live browser audit</b> <span class="pill not_checked">Not available in this version</span><p class="mut">Automatic browsing through TinyFish needs a secret API key, which must never be placed in a web page. The Python version of ClearCart has a server-side adapter for it. This version never fakes a live result.</p></div>`}
+function runSample(){const id=document.getElementById('sid').value,s=SAMPLES[id],a=makeAudit(s.evidence,s.url,'sample',s.name,'Sample data: fictional store, not a real investigation.');a.limitations.unshift('Sample data is fictional and hand-written to demonstrate the detectors.');a.provider.sample_id=id;S.history.unshift(a);S.sel=a.audit_id;go('Results')}
+function runCustom(){const e=document.getElementById('cerr');e.textContent='';let ev;
+ if(!document.getElementById('auth').checked){e.textContent='Please confirm you are authorised.';return}
+ let url=document.getElementById('url').value.trim();if(!/^https?:\/\/[^\s\/]+\.[^\s\/]+/i.test(url)){e.textContent='Enter a valid http(s) store URL.';return}
+ try{ev=JSON.parse(document.getElementById('ev').value)}catch(x){e.textContent='The evidence is not valid JSON: '+x.message;return}
+ if(!ev||typeof ev!=='object'||Array.isArray(ev)){e.textContent='Evidence must be a JSON object.';return}
+ if(!['pricing','actions','cart_snapshots','urgency','offers','options'].some(k=>k in ev)){e.textContent='No recognised evidence sections found.';return}
+ const a=makeAudit(ev,url,'manual',document.getElementById('nm').value.trim(),'User-entered evidence; not verified by ClearCart.');S.history.unshift(a);S.sel=a.audit_id;go('Results')}
+function copyTpl(){const t=JSON.stringify(SAMPLES.price_gap.evidence,null,2);navigator.clipboard?navigator.clipboard.writeText(t).then(()=>alert('Copied. Paste it into the box.')):(document.getElementById('ev').value=t)}
+function dl(id){const a=S.history.find(x=>x.audit_id===id),b=new Blob([JSON.stringify(a,null,2)],{type:'application/json'}),l=document.createElement('a');l.href=URL.createObjectURL(b);l.download='clearcart-'+id+'.json';l.click()}
+function pResults(){if(!S.history.length)return `<h2 style="margin-top:0">Audit results</h2><div class="card">No audits yet in this session. <a href="#" onclick="go('New audit');return false">Run a sample audit</a> to see a full report.</div>`;
+ const a=S.history.find(x=>x.audit_id===S.sel)||S.history[0],c={};a.findings.forEach(f=>c[f.status]=(c[f.status]||0)+1);
+ const fs=[...a.findings].sort((x,y)=>STO[x.status]-STO[y.status]||SO[x.severity]-SO[y.severity]);
+ const grp=(t,st)=>{const l=fs.filter(f=>st.includes(f.status));return l.length?`<h2>${t}</h2>`+l.map(card).join(''):''};
+ return `<h2 style="margin-top:0">Audit results</h2><div class="noprint"><select onchange="S.sel=this.value;render()">${S.history.map(h=>`<option value="${h.audit_id}" ${h.audit_id===a.audit_id?'selected':''}>${esc((h.store_name||h.store_url)+' · '+h.mode+' · '+h.completed_at.slice(0,19))}</option>`).join('')}</select></div>
+${a.mode==='sample'?'<div class="note">Sample audit: the store and all data are fictional.</div>':''}
+<p><b>${esc(a.store_name||'Store')}</b> · ${esc(a.store_url)}<br><span class="mut">Mode: ${a.mode} · Status: ${a.status.replace(/_/g,' ')} · Completed: ${a.completed_at} · ID: ${a.audit_id}</span></p>
+<div class="grid"><div class="card"><div class="m">${c.potential_issue||0}</div>Potential issues</div><div class="card"><div class="m">${c.insufficient_evidence||0}</div>Insufficient evidence</div><div class="card"><div class="m">${c.not_checked||0}</div>Not checked</div><div class="card"><div class="m">${c.no_signal_detected||0}</div>No signal detected</div></div>
+<div class="note">No signal detected does not mean a checkout is free of dark patterns. Findings are review prompts, not legal conclusions. ${DISCLAIMER}</div>
+<div class="noprint"><button class="p" onclick="dl('${a.audit_id}')">Download JSON</button> <button class="s" onclick="window.print()">Save as PDF (print)</button></div>
+${grp('Potential issues',['potential_issue'])}${grp('Needs more evidence or not checked',['insufficient_evidence','not_checked'])}${grp('Errors',['audit_error'])}${grp('No signal detected',['no_signal_detected'])}
+<h2>Coverage</h2>${(a.pages_inspected||[]).map(p=>`<div class="mut">[${esc(p.status)}] ${esc(p.url)} ${esc(p.note||'')}</div>`).join('')||'<span class="mut">No pages were recorded.</span>'}${a.limitations.map(x=>`<div class="mut">- ${esc(x)}</div>`).join('')}`}
+function pMethod(){const r={drip_pricing:'Compares the final pre-payment total with the product price plus every disclosed charge, minus discounts. A positive unexplained gap is flagged; disclosed charges are not.',basket_sneaking:'Compares cart contents with the recorded add/remove actions (ignoring duplicate events). Needs a complete action history, otherwise "insufficient evidence".',false_urgency:'Detects timers and scarcity wording, then compares repeat observations (does a countdown restart? does "only 3 left" go up?). Wording alone is never treated as proof.',confirm_shaming:'Matches decline labels against transparent wording patterns. Subjective; reviewed by a human.',preselected_addons:'Flags optional extras selected before any interaction. Required fields are ignored; unknown initial state is "insufficient evidence".'};
+ return `<h2 style="margin-top:0">Methodology and responsible use</h2><p>Evidence comes first, warnings second, conclusions last. ClearCart's own deterministic rules compare the evidence you give it. Evidence items are labelled <i>observed</i> (recorded facts) or <i>inference</i> (calculated by a rule).</p>${Object.entries(r).map(([k,v])=>`<div class="card"><b>${LABEL[k]}</b><p>${v}</p></div>`).join('')}
+<h2>Reading confidence</h2><p>Confidence is a number from 0 to 100% set by each rule and explained on each finding. It reflects how complete the evidence was, not the probability that a law is broken. There is deliberately no overall compliance score.</p>
+<h2>Known limitations</h2><p>Text heuristics produce false positives and negatives. Timers and stock levels can legitimately differ between sessions. Manually pasted evidence is not verified. Only audit stores you are authorised to test.</p><div class="note">${DISCLAIMER}</div>`}
+function render(){nav();const v={'Overview':pOverview,'New audit':pNew,'Results':pResults,'Methodology':pMethod}[S.page]();document.getElementById('app').innerHTML=v;window.scrollTo(0,0);
+ const sel=document.getElementById('sid');if(sel)sel.onchange=()=>document.getElementById('ssum').textContent=SAMPLES[sel.value].summary}
+if(typeof document!=='undefined')render();
+</script></body></html>
